@@ -14,7 +14,7 @@
     }
   ],
   "hosting": {
-    "public": "dist/browser/browser",
+    "public": "dist/browser",
     "ignore": [
       "firebase.json",
       "**/.*",
@@ -23,12 +23,7 @@
     "rewrites": [
       {
         "source": "**",
-        "destination": "/index.csr.html"
-      },
-      {
-        "source": "/**",
-        "destination": "https://ideazone3d.com",
-        "type": 301
+        "destination": "/index.html"
       }
     ],
     "predeploy": [
