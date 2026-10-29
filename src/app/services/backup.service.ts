@@ -6,8 +6,8 @@ import { HttpClient } from '@angular/common/http';
 export interface BackupRecord {
   id: string;
   filename: string;
-  type: 'MANUAL' | 'SCHEDULED';
-  status: 'Success' | 'Failed';
+  type: 'MANUAL' | 'SCHEDULED' | 'UPLOADED' | string;
+  status: 'Success' | 'Failed' | string;
   table_count: number;
   row_count: number;
   size_bytes: number;
@@ -102,6 +102,18 @@ export class BackupService {
   getDownloadUrl(backup: BackupRecord): string {
     const token = this.getAuthToken();
     return `${this.api.getBaseUrl()}/backups/download/${backup.id}?token=${encodeURIComponent(token)}`;
+  }
+
+  uploadBackup(file: File): Observable<BackupImpactReport> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.api.post<BackupImpactReport>('/backups/upload', formData);
+  }
+
+  uploadAndRestoreBackup(file: File): Observable<RestoreResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.api.post<RestoreResponse>('/backups/upload-restore', formData);
   }
 
   getRestoreImpact(id: string): Observable<BackupImpactReport> {

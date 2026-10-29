@@ -2,12 +2,18 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const multer = require('multer');
 const pool = require('../db');
 const { adminAuth } = require('../middleware/auth');
 const { bucket } = require('../firebase');
 
 const router = express.Router();
 const backupsDir = path.join(__dirname, '../uploads/backups');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+});
 
 // Ensure local backups directory exists
 if (!fs.existsSync(backupsDir)) {
@@ -287,32 +293,10 @@ async function createDatabaseBackup(type = 'MANUAL') {
 }
 
 /**
- * Helper to fetch backup file buffer and extract SQL and Manifest (supports .zip and .sql)
+ * Helper to parse SQL and Manifest from a file buffer (ZIP or SQL)
  */
-async function getBackupSqlAndManifest(backup) {
-  const filePath = path.join(backupsDir, backup.filename);
-  let buffer = null;
-
-  if (fs.existsSync(filePath)) {
-    buffer = fs.readFileSync(filePath);
-  } else if (bucket) {
-    const cloudFile = bucket.file(`backups/${backup.filename}`);
-    const [exists] = await cloudFile.exists();
-    if (exists) {
-      console.log(`[Backup Engine] Downloading backup from Firebase Storage: backups/${backup.filename}`);
-      const [cloudBuf] = await cloudFile.download();
-      buffer = cloudBuf;
-      try { fs.writeFileSync(filePath, buffer); } catch (e) {}
-    }
-  }
-
-  if (!buffer) {
-    throw new Error('Backup file not found on local disk or Firebase Storage');
-  }
-
-  // Check if it's a ZIP archive (starts with PK / 0x50 0x4B or filename ends with .zip)
-  const isZip = backup.filename.endsWith('.zip') || (buffer[0] === 0x50 && buffer[1] === 0x4B);
-
+function parseBackupBuffer(buffer, originalFilename = '') {
+  const isZip = originalFilename.toLowerCase().endsWith('.zip') || (buffer[0] === 0x50 && buffer[1] === 0x4B);
   let sqlScript = '';
   let manifest = null;
 
@@ -325,7 +309,9 @@ async function getBackupSqlAndManifest(backup) {
     if (manifestEntry) {
       try {
         manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[Backup Parser] Failed to parse manifest.json from ZIP:', e.message);
+      }
     }
 
     // Look for .sql file
@@ -352,15 +338,90 @@ async function getBackupSqlAndManifest(backup) {
       tablesFound.push({ table: tableName, rowCount });
     }
     manifest = {
-      backupId: backup.id,
-      timestamp: backup.created_at,
-      type: backup.type,
       tableCount: tablesFound.length,
       totalRows: tablesFound.reduce((sum, t) => sum + t.rowCount, 0),
       tables: tablesFound
     };
   }
 
+  return { sqlScript, manifest, isZip };
+}
+
+/**
+ * Execute restore inside transactional block with session_replication_role = replica
+ * and reset PostgreSQL serial sequences for restored tables
+ */
+async function executeRestoreTransaction(sqlScript, manifest) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SET session_replication_role = 'replica'");
+    await client.query(sqlScript);
+    await client.query("SET session_replication_role = 'origin'");
+
+    // Synchronize serial sequences for all restored tables
+    if (manifest && manifest.tables) {
+      for (const item of manifest.tables) {
+        try {
+          const seqRes = await client.query(
+            `SELECT pg_get_serial_sequence('"' || $1 || '"', 'id') AS seq`,
+            [item.table]
+          );
+          const seqName = seqRes.rows[0]?.seq;
+          if (seqName) {
+            await client.query(
+              `SELECT setval($1, COALESCE((SELECT MAX(id) FROM "${item.table}"), 0) + 1, false)`,
+              [seqName]
+            );
+          }
+        } catch (e) {
+          // Table doesn't have an 'id' column or is not a sequence, safely ignore
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+  } catch (restoreErr) {
+    try {
+      await client.query("SET session_replication_role = 'origin'");
+    } catch (e) {}
+    await client.query('ROLLBACK');
+    throw restoreErr;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Helper to fetch backup file buffer and extract SQL and Manifest (supports .zip and .sql)
+ */
+async function getBackupSqlAndManifest(backup) {
+  const filePath = path.join(backupsDir, backup.filename);
+  let buffer = null;
+
+  if (fs.existsSync(filePath)) {
+    buffer = fs.readFileSync(filePath);
+  } else if (bucket) {
+    const cloudFile = bucket.file(`backups/${backup.filename}`);
+    const [exists] = await cloudFile.exists();
+    if (exists) {
+      console.log(`[Backup Engine] Downloading backup from Firebase Storage: backups/${backup.filename}`);
+      const [cloudBuf] = await cloudFile.download();
+      buffer = cloudBuf;
+      try { fs.writeFileSync(filePath, buffer); } catch (e) {}
+    }
+  }
+
+  if (!buffer) {
+    throw new Error('Backup file not found on local disk or Firebase Storage');
+  }
+
+  const { sqlScript, manifest, isZip } = parseBackupBuffer(buffer, backup.filename);
+  if (manifest) {
+    manifest.backupId = backup.id;
+    manifest.timestamp = backup.created_at;
+    manifest.type = backup.type;
+  }
   return { sqlScript, manifest, isZip };
 }
 
@@ -580,6 +641,224 @@ router.post('/create', adminAuth, async (req, res, next) => {
 });
 
 /**
+ * POST /api/backups/upload
+ * Upload a .zip backup archive (or .sql dump), analyze impact against live database, and stage for restore
+ */
+router.post('/upload', adminAuth, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: 'No backup file provided in upload.' });
+    }
+
+    const originalName = req.file.originalname || 'uploaded_backup.zip';
+    const buffer = req.file.buffer;
+    const isZip = originalName.toLowerCase().endsWith('.zip') || (buffer[0] === 0x50 && buffer[1] === 0x4B);
+    const isSql = originalName.toLowerCase().endsWith('.sql');
+
+    if (!isZip && !isSql) {
+      return res.status(400).json({ message: 'Invalid file format. Please upload a .zip archive or .sql dump.' });
+    }
+
+    const { sqlScript, manifest } = parseBackupBuffer(buffer, originalName);
+
+    if (!manifest.tables || manifest.tables.length === 0) {
+      return res.status(400).json({ message: 'The uploaded file does not contain valid database table schemas or records.' });
+    }
+
+    // Compare with live database to generate impact assessment
+    const tableImpacts = [];
+    let currentTotalRows = 0;
+
+    for (const item of manifest.tables) {
+      let currentRows = 0;
+      let existsInCurrentDb = false;
+      try {
+        const countRes = await pool.query(`SELECT COUNT(*) as count FROM "${item.table}"`);
+        currentRows = parseInt(countRes.rows[0]?.count || 0, 10);
+        existsInCurrentDb = true;
+      } catch (e) {
+        existsInCurrentDb = false;
+      }
+
+      currentTotalRows += currentRows;
+      const rowDiff = item.rowCount - currentRows;
+
+      let status = 'WILL_OVERWRITE';
+      if (!existsInCurrentDb) {
+        status = 'NEW_TABLE';
+      } else if (rowDiff === 0) {
+        status = 'MATCHES';
+      } else if (rowDiff > 0) {
+        status = `ADDS_${rowDiff}`;
+      } else {
+        status = `REDUCES_${Math.abs(rowDiff)}`;
+      }
+
+      tableImpacts.push({
+        table: item.table,
+        snapshotRows: item.rowCount,
+        currentRows,
+        diff: rowDiff,
+        exists: existsInCurrentDb,
+        status
+      });
+    }
+
+    // Persist file locally and in Firebase Storage under backups/
+    const backupId = `BK-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const ext = isZip ? '.zip' : '.sql';
+    const now = new Date();
+    const dateStr = now.toISOString().replace(/[:.]/g, '-');
+    const filename = `backup_${dateStr}_${backupId}${ext}`;
+    const localFilePath = path.join(backupsDir, filename);
+
+    fs.writeFileSync(localFilePath, buffer);
+
+    let storageType = 'Local Disk';
+    if (bucket) {
+      try {
+        const cloudFile = bucket.file(`backups/${filename}`);
+        await cloudFile.save(buffer, {
+          metadata: {
+            contentType: isZip ? 'application/zip' : 'application/sql',
+            metadata: {
+              backupId,
+              type: 'UPLOADED',
+              originalName,
+              tableCount: String(manifest.tables.length),
+              rowCount: String(manifest.totalRows)
+            }
+          }
+        });
+        storageType = 'Firebase Storage';
+        console.log(`[Backup Engine] Uploaded backup preserved in Firebase Storage: backups/${filename}`);
+      } catch (cloudErr) {
+        console.error('[Backup Engine] Failed to upload to Firebase Storage:', cloudErr.message);
+      }
+    }
+
+    const insertQuery = `
+      INSERT INTO database_backups (
+        id, filename, type, status, table_count, row_count, size_bytes, execution_duration_ms, storage_type, created_at
+      ) VALUES ($1, $2, 'UPLOADED', 'Success', $3, $4, $5, 0, $6, NOW())
+      RETURNING *
+    `;
+    const dbRes = await pool.query(insertQuery, [
+      backupId,
+      filename,
+      manifest.tables.length,
+      manifest.totalRows,
+      buffer.length,
+      storageType
+    ]);
+
+    const savedBackup = dbRes.rows[0];
+
+    // Maintain max retention limit (prune oldest)
+    await applyRetentionPolicy();
+
+    res.json({
+      message: 'Backup archive uploaded and analyzed successfully',
+      backup: {
+        id: savedBackup.id,
+        filename: savedBackup.filename,
+        created_at: savedBackup.created_at,
+        type: 'UPLOADED',
+        table_count: savedBackup.table_count,
+        row_count: savedBackup.row_count,
+        size_bytes: savedBackup.size_bytes,
+        isZip,
+        original_name: originalName
+      },
+      summary: {
+        totalTablesInSnapshot: manifest.tables.length,
+        totalSnapshotRows: manifest.totalRows,
+        totalCurrentRows: currentTotalRows,
+        netDifference: manifest.totalRows - currentTotalRows
+      },
+      tables: tableImpacts
+    });
+  } catch (err) {
+    console.error('Upload backup error:', err);
+    res.status(500).json({ message: 'Failed to process uploaded backup archive', error: err.message });
+  }
+});
+
+/**
+ * POST /api/backups/upload-restore
+ * Directly upload and execute database restoration in one single request
+ */
+router.post('/upload-restore', adminAuth, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: 'No backup file provided in upload.' });
+    }
+
+    const originalName = req.file.originalname || 'uploaded_backup.zip';
+    const buffer = req.file.buffer;
+    const isZip = originalName.toLowerCase().endsWith('.zip') || (buffer[0] === 0x50 && buffer[1] === 0x4B);
+
+    const { sqlScript, manifest } = parseBackupBuffer(buffer, originalName);
+
+    // Execute restore
+    await executeRestoreTransaction(sqlScript, manifest);
+
+    // Persist file record
+    const backupId = `BK-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const ext = isZip ? '.zip' : '.sql';
+    const now = new Date();
+    const dateStr = now.toISOString().replace(/[:.]/g, '-');
+    const filename = `backup_${dateStr}_${backupId}${ext}`;
+    const localFilePath = path.join(backupsDir, filename);
+
+    fs.writeFileSync(localFilePath, buffer);
+
+    let storageType = 'Local Disk';
+    if (bucket) {
+      try {
+        const cloudFile = bucket.file(`backups/${filename}`);
+        await cloudFile.save(buffer, {
+          metadata: {
+            contentType: isZip ? 'application/zip' : 'application/sql',
+            metadata: { backupId, type: 'UPLOADED', originalName }
+          }
+        });
+        storageType = 'Firebase Storage';
+      } catch (e) {}
+    }
+
+    const insertQuery = `
+      INSERT INTO database_backups (
+        id, filename, type, status, table_count, row_count, size_bytes, execution_duration_ms, storage_type, created_at
+      ) VALUES ($1, $2, 'UPLOADED', 'Success', $3, $4, $5, 0, $6, NOW())
+      RETURNING *
+    `;
+    const dbRes = await pool.query(insertQuery, [
+      backupId,
+      filename,
+      manifest.tables.length,
+      manifest.totalRows,
+      buffer.length,
+      storageType
+    ]);
+
+    await applyRetentionPolicy();
+
+    res.json({
+      message: `Database restored successfully from uploaded ${isZip ? 'ZIP archive' : 'SQL snapshot'}`,
+      id: backupId,
+      filename,
+      restoredTables: manifest.tables.length,
+      restoredRows: manifest.totalRows,
+      tables: manifest.tables || []
+    });
+  } catch (err) {
+    console.error('Direct upload restore error:', err);
+    res.status(500).json({ message: 'Failed to restore uploaded backup archive', error: err.message });
+  }
+});
+
+/**
  * GET /api/backups/impact/:id
  * Analyze affected tables and record counts BEFORE restoring snapshot
  */
@@ -743,23 +1022,8 @@ router.post('/restore/:id', adminAuth, async (req, res, next) => {
     const backup = result.rows[0];
     const { sqlScript, manifest, isZip } = await getBackupSqlAndManifest(backup);
 
-    // Execute SQL script inside a PostgreSQL transaction with replica session
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query("SET session_replication_role = 'replica'");
-      await client.query(sqlScript);
-      await client.query("SET session_replication_role = 'origin'");
-      await client.query('COMMIT');
-    } catch (restoreErr) {
-      try {
-        await client.query("SET session_replication_role = 'origin'");
-      } catch (e) {}
-      await client.query('ROLLBACK');
-      throw restoreErr;
-    } finally {
-      client.release();
-    }
+    // Execute SQL script inside a PostgreSQL transaction with replica session and sequence reset
+    await executeRestoreTransaction(sqlScript, manifest);
 
     res.json({
       message: `Database restored successfully from ${isZip ? 'ZIP archive' : 'SQL snapshot'}`,

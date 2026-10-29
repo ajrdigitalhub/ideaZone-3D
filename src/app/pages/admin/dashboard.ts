@@ -1119,6 +1119,7 @@ export class AdminDashboardComponent implements AfterViewInit {
   backupHistory = signal<BackupRecord[]>([]);
   backupLoading = signal<boolean>(false);
   backupActionLoading = signal<boolean>(false);
+  uploadRestoreLoading = signal<boolean>(false);
   restoreModalOpen = signal<boolean>(false);
   restoreImpactLoading = signal<boolean>(false);
   restoreExecuting = signal<boolean>(false);
@@ -1248,6 +1249,39 @@ export class AdminDashboardComponent implements AfterViewInit {
     this.restoreImpact.set(null);
     this.restoreSuccessResult.set(null);
     this.selectedBackupForRestore.set(null);
+  }
+
+  async onUploadBackupFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+
+    const file = input.files[0];
+    input.value = '';
+
+    if (!file.name.toLowerCase().endsWith('.zip') && !file.name.toLowerCase().endsWith('.sql')) {
+      this.toastService.show('Please upload a .zip archive or .sql dump file', 'error');
+      return;
+    }
+
+    this.uploadRestoreLoading.set(true);
+    this.toastService.show(`Uploading and analyzing backup: ${file.name}...`, 'info');
+
+    try {
+      const impactReport = await firstValueFrom(this.backupService.uploadBackup(file));
+      this.selectedBackupForRestore.set(impactReport.backup);
+      this.restoreImpact.set(impactReport);
+      this.restoreSuccessResult.set(null);
+      this.restoreImpactLoading.set(false);
+      this.restoreModalOpen.set(true);
+
+      this.toastService.show(`Analyzed ${impactReport.summary?.totalTablesInSnapshot || 0} tables in ${file.name}`, 'success');
+      await this.loadBackupData();
+    } catch (error: any) {
+      console.error('Upload backup error:', error);
+      this.toastService.show(`Failed to analyze backup archive: ${error.message || 'Error'}`, 'error');
+    } finally {
+      this.uploadRestoreLoading.set(false);
+    }
   }
 
   async executeRestore() {
