@@ -237,6 +237,16 @@
             <span class="font-medium text-xs uppercase tracking-widest whitespace-nowrap"
               [class.hidden]="isSidebarCollapsed()">Payments</span>
           </button>
+
+          <button (click)="activeTab.set('backups'); isMobileMenuOpen.set(false)"
+            class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all group"
+            [class.bg-white/5]="activeTab() === 'backups'" [class.text-accent]="activeTab() === 'backups'"
+            [class.text-accent-muted]="activeTab() !== 'backups'" [title]="isSidebarCollapsed() ? 'Database Backup' : ''">
+            <span
+              class="material-icons text-lg group-hover:scale-110 transition-transform">storage</span>
+            <span class="font-medium text-xs uppercase tracking-widest whitespace-nowrap"
+              [class.hidden]="isSidebarCollapsed()">Database Backup</span>
+          </button>
         </div>
         }
       </div>
@@ -2610,6 +2620,479 @@
             </div>
           </div>
         </div>
+      </div>
+      }
+
+            <!-- Database Backup & Disaster Recovery Center View -->
+      @if (activeTab() === 'backups') {
+      <div class="space-y-8 animate-fade-in">
+        <!-- Top Title & Action Header -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-metallic-black p-6 rounded-2xl border border-white/10 shadow-2xl">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h1 class="text-2xl font-bold tracking-tight text-white font-serif">
+                Database Backup & Disaster Recovery
+              </h1>
+              <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold font-mono uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                DB ONLINE
+              </span>
+            </div>
+            <p class="text-xs text-accent-muted flex items-center gap-2">
+              <span>Dynamic PostgreSQL Snapshot Engine</span>
+              <span>•</span>
+              <span>Autonomous Twice-Weekly Background Cron</span>
+              <span>•</span>
+              <span>Compressed ZIP Vault</span>
+            </p>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <button (click)="exportAllBackups()"
+              class="px-4 py-2.5 bg-white/[0.03] hover:bg-white/[0.08] text-slate-300 hover:text-white rounded-xl border border-white/10 text-xs font-semibold flex items-center gap-2 transition-all duration-200">
+              <span class="material-icons text-sm">file_download</span>
+              Export JSON Log
+            </button>
+
+            <button (click)="triggerManualBackup()" [disabled]="backupActionLoading()"
+              class="px-5 py-2.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-accent text-white font-bold rounded-xl text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/40 hover:scale-[1.02] active:scale-95 transition-all duration-200 disabled:opacity-50">
+              <span class="material-icons text-sm" [class.animate-spin]="backupActionLoading()">
+                {{ backupActionLoading() ? 'sync' : 'add_circle' }}
+              </span>
+              {{ backupActionLoading() ? 'Generating ZIP...' : 'Create Backup Now' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Dynamic Overview Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <!-- Card 1: Backup Health -->
+          <div class="tech-card p-5 border border-white/10 bg-white/[0.02] relative overflow-hidden group hover:border-white/20 transition-all">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-[11px] font-medium uppercase tracking-wider text-accent-muted">Protection Status</span>
+              <span class="px-2 py-0.5 rounded text-[9px] font-bold font-mono uppercase tracking-widest bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                ACTIVE
+              </span>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                <span class="material-icons text-xl">security</span>
+              </div>
+              <div>
+                <div class="text-base font-bold text-white font-mono">Protected</div>
+                <div class="text-[11px] text-accent-muted">Autonomous cron backup active</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: Last Successful Backup -->
+          <div class="tech-card p-5 border border-white/10 bg-white/[0.02] relative overflow-hidden group hover:border-white/20 transition-all">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-[11px] font-medium uppercase tracking-wider text-accent-muted">Last Successful Snapshot</span>
+              <span class="material-icons text-accent-muted text-sm">history</span>
+            </div>
+            <div>
+              <div class="text-lg font-bold text-white font-mono">
+                {{ backupStats()?.lastBackup?.table_count || backupStats()?.dbTableCount || 0 }} tables · {{ formatBytes(backupStats()?.lastBackup?.size_bytes || 0) }}
+              </div>
+              <div class="text-[11px] text-accent-muted mt-1 font-mono truncate">
+                {{ backupStats()?.lastBackup?.created_at ? (backupStats()?.lastBackup?.created_at | date:'d MMM yyyy, hh:mm a') : 'No backups executed yet' }}
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Next Scheduled Backup -->
+          <div class="tech-card p-5 border border-white/10 bg-white/[0.02] relative overflow-hidden group hover:border-white/20 transition-all">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-[11px] font-medium uppercase tracking-wider text-accent-muted">Auto Schedule (Cron)</span>
+              <span class="material-icons text-cyan-400 text-sm">schedule</span>
+            </div>
+            <div>
+              <div class="text-lg font-bold text-white font-mono">
+                Twice Weekly (02:00 AM)
+              </div>
+              <div class="text-[11px] text-accent-muted mt-1 font-mono">
+                Mon & Thu at 2:00 AM · Asia/Kolkata
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 4: Remote Cloud Storage -->
+          <div class="tech-card p-5 border border-white/10 bg-white/[0.02] relative overflow-hidden group hover:border-white/20 transition-all">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-[11px] font-medium uppercase tracking-wider text-accent-muted">Remote Cloud Vault</span>
+              <span class="material-icons text-sky-400 text-sm">cloud_done</span>
+            </div>
+            <div>
+              <div class="text-lg font-bold text-white font-mono">
+                Firebase Storage
+              </div>
+              <div class="text-[11px] text-accent-muted mt-1 font-mono truncate">
+                Path: /backups · Max 10 ZIPs Retained
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Main Workspace: Full Width Backup History Table -->
+        <div class="w-full space-y-4">
+          <div class="tech-card p-6 border border-white/10 bg-metallic-black rounded-2xl">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+              <div>
+                <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                  <span>Backup History</span>
+                  <span class="text-xs font-mono font-normal text-accent-muted">({{ backupHistory().length }} snapshots)</span>
+                </h3>
+                <p class="text-xs text-accent-muted">All manual and automated snapshots archived in Firebase Storage</p>
+              </div>
+
+              <div class="flex items-center gap-3">
+                <select [(ngModel)]="backupFilterStatus" (ngModelChange)="filterBackupHistory()"
+                  class="bg-white/5 border border-white/10 text-white rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-accent">
+                  <option value="ALL">All Statuses</option>
+                  <option value="Success">Success</option>
+                  <option value="Failed">Failed</option>
+                </select>
+
+                <select [(ngModel)]="backupFilterType" (ngModelChange)="filterBackupHistory()"
+                  class="bg-white/5 border border-white/10 text-white rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-accent">
+                  <option value="ALL">All Types</option>
+                  <option value="MANUAL">Manual</option>
+                  <option value="SCHEDULED">Scheduled</option>
+                </select>
+
+                <button (click)="loadBackupData()" class="p-2 bg-white/5 hover:bg-white/10 text-accent rounded-xl border border-white/10 transition-colors" title="Refresh backup list">
+                  <span class="material-icons text-sm">refresh</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- History Table -->
+            <div class="overflow-x-auto custom-scrollbar">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr class="border-b border-white/10 text-[10px] font-bold text-accent-muted uppercase tracking-wider">
+                    <th class="py-3 px-4">Date & Time</th>
+                    <th class="py-3 px-4">Type</th>
+                    <th class="py-3 px-4">Status</th>
+                    <th class="py-3 px-4">Tables & Records</th>
+                    <th class="py-3 px-4">Archive Size</th>
+                    <th class="py-3 px-4">Storage</th>
+                    <th class="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-white/5 text-xs">
+                  @if (backupLoading()) {
+                    @for (i of [1,2,3,4]; track i) {
+                      <tr>
+                        <td colspan="7" class="py-4 px-4 text-center">
+                          <app-skeleton width="100%" height="2.2rem" className="rounded-lg"></app-skeleton>
+                        </td>
+                      </tr>
+                    }
+                  } @else {
+                    @for (item of backupHistory(); track item.id) {
+                      <tr class="hover:bg-white/[0.02] transition-colors group">
+                        <!-- Date & File -->
+                        <td class="py-4 px-4 font-mono">
+                          <div class="font-bold text-white text-xs whitespace-nowrap">
+                            {{ item.created_at ? (item.created_at | date:'d MMM yyyy, hh:mm a') : 'N/A' }}
+                          </div>
+                          <div class="flex items-center gap-1.5 mt-1">
+                            @if (item.filename?.endsWith('.zip')) {
+                              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono bg-indigo-500/15 text-indigo-400 border border-indigo-500/30">
+                                <span class="material-icons text-[10px]">folder_zip</span>
+                                ZIP
+                              </span>
+                            } @else {
+                              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono bg-slate-500/15 text-slate-400 border border-slate-500/30">
+                                <span class="material-icons text-[10px]">description</span>
+                                SQL
+                              </span>
+                            }
+                            <span class="text-[10px] text-accent-muted font-mono truncate max-w-[190px]" [title]="item.filename">
+                              {{ item.filename }}
+                            </span>
+                          </div>
+                        </td>
+
+                        <!-- Type Badge -->
+                        <td class="py-4 px-4 whitespace-nowrap">
+                          @if (item.type === 'SCHEDULED') {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-bold font-mono uppercase tracking-wider bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                              <span class="material-icons text-[11px]">alarm</span>
+                              CRON AUTO
+                            </span>
+                          } @else {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-bold font-mono uppercase tracking-wider bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                              <span class="material-icons text-[11px]">touch_app</span>
+                              MANUAL
+                            </span>
+                          }
+                        </td>
+
+                        <!-- Status Badge -->
+                        <td class="py-4 px-4 whitespace-nowrap">
+                          @if (item.status?.toLowerCase() === 'success') {
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold font-mono uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                              SUCCESS
+                            </span>
+                          } @else {
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold font-mono uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25" [title]="item.error_message || ''">
+                              <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                              FAILED
+                            </span>
+                          }
+                        </td>
+
+                        <!-- Tables & Records -->
+                        <td class="py-4 px-4 font-mono whitespace-nowrap">
+                          <div class="font-bold text-white text-xs">{{ item.table_count || 0 }} tables</div>
+                          <div class="text-[11px] text-accent-muted">{{ (item.row_count || 0) | number }} records</div>
+                        </td>
+
+                        <!-- Size & Duration -->
+                        <td class="py-4 px-4 font-mono whitespace-nowrap">
+                          <div class="font-bold text-white text-xs">{{ formatBytes(item.size_bytes) }}</div>
+                          <div class="text-[11px] text-accent-muted">{{ ((item.execution_duration_ms || 0) / 1000) | number:'1.0-1' }}s duration</div>
+                        </td>
+
+                        <!-- Cloud Storage Badge -->
+                        <td class="py-4 px-4 whitespace-nowrap">
+                          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono bg-white/[0.03] border border-white/10 text-slate-300">
+                            <span class="material-icons text-[13px] text-sky-400">cloud_done</span>
+                            Firebase Cloud
+                          </span>
+                        </td>
+
+                        <!-- Actions: Theme-based, professional icon buttons -->
+                        <td class="py-4 px-4 text-right whitespace-nowrap">
+                          <div class="inline-flex items-center justify-end gap-1.5">
+                            @if (item.status?.toLowerCase() === 'success') {
+                              <!-- Download -->
+                              <button (click)="downloadBackupFile(item)"
+                                class="p-2 rounded-lg bg-white/[0.03] hover:bg-emerald-500/15 text-accent-muted hover:text-emerald-400 border border-white/10 hover:border-emerald-500/30 transition-all duration-200 group/btn"
+                                title="Download ZIP Archive">
+                                <span class="material-icons text-sm group-hover/btn:scale-110 transition-transform">download</span>
+                              </button>
+
+                              <!-- Verify -->
+                              <button (click)="verifyBackupFile(item)"
+                                class="p-2 rounded-lg bg-white/[0.03] hover:bg-cyan-500/15 text-accent-muted hover:text-cyan-400 border border-white/10 hover:border-cyan-500/30 transition-all duration-200 group/btn"
+                                title="Verify Snapshot Integrity">
+                                <span class="material-icons text-sm group-hover/btn:scale-110 transition-transform">verified_user</span>
+                              </button>
+
+                              <!-- Restore (Opens Impact Assessment Modal) -->
+                              <button (click)="openRestoreModal(item)"
+                                class="p-2 rounded-lg bg-white/[0.03] hover:bg-amber-500/15 text-accent-muted hover:text-amber-400 border border-white/10 hover:border-amber-500/30 transition-all duration-200 group/btn"
+                                title="Restore Full Database (Inspect Affected Tables)">
+                                <span class="material-icons text-sm group-hover/btn:scale-110 transition-transform">settings_backup_restore</span>
+                              </button>
+                            }
+
+                            <!-- Delete -->
+                            <button (click)="deleteBackupFile(item)"
+                              class="p-2 rounded-lg bg-white/[0.03] hover:bg-rose-500/15 text-accent-muted hover:text-rose-400 border border-white/10 hover:border-rose-500/30 transition-all duration-200 group/btn"
+                              title="Delete from Storage">
+                              <span class="material-icons text-sm group-hover/btn:scale-110 transition-transform">delete_outline</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    } @empty {
+                      <tr>
+                        <td colspan="7" class="py-12 text-center text-accent-muted italic font-mono">
+                          No database snapshots preserved yet. Click "Create Backup Now" to generate an instant ZIP archive.
+                        </td>
+                      </tr>
+                    }
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Restore Database Impact Assessment & Confirmation Modal -->
+        @if (restoreModalOpen()) {
+          <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+            <div class="bg-[#0e1217] border border-white/10 rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-scale-up">
+              
+              <!-- Modal Header -->
+              <div class="p-6 border-b border-white/10 flex items-start justify-between bg-white/[0.02]">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                    <span class="material-icons text-xl">settings_backup_restore</span>
+                  </div>
+                  <div>
+                    <h3 class="text-base font-bold text-white flex items-center gap-2">
+                      <span>Restore Database Snapshot</span>
+                      @if (selectedBackupForRestore()?.filename?.endsWith('.zip')) {
+                        <span class="px-2 py-0.5 text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded font-bold">ZIP ARCHIVE</span>
+                      } @else {
+                        <span class="px-2 py-0.5 text-[10px] bg-slate-500/20 text-slate-300 border border-slate-500/30 rounded font-bold">SQL DUMP</span>
+                      }
+                    </h3>
+                    <p class="text-xs text-accent-muted mt-0.5">
+                      Review affected tables and records before executing disaster recovery
+                    </p>
+                  </div>
+                </div>
+
+                <button (click)="closeRestoreModal()" [disabled]="restoreExecuting()"
+                  class="p-2 text-accent-muted hover:text-white rounded-lg hover:bg-white/5 transition-colors disabled:opacity-50">
+                  <span class="material-icons text-lg">close</span>
+                </button>
+              </div>
+
+              <!-- Modal Body -->
+              <div class="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-5">
+                
+                @if (restoreImpactLoading()) {
+                  <!-- Loading State -->
+                  <div class="py-16 text-center space-y-4">
+                    <div class="w-12 h-12 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div class="font-bold text-white text-sm">Analyzing Backup Archive & Live Database...</div>
+                    <div class="text-xs text-accent-muted">Comparing snapshot manifest against current PostgreSQL tables</div>
+                  </div>
+                } @else if (restoreSuccessResult()) {
+                  <!-- Success State -->
+                  <div class="py-12 text-center space-y-4">
+                    <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mx-auto">
+                      <span class="material-icons text-3xl">check_circle</span>
+                    </div>
+                    <h4 class="text-lg font-bold text-white">Database Restoration Complete</h4>
+                    <p class="text-xs text-accent-muted max-w-md mx-auto">
+                      Successfully restored <strong class="text-white">{{ restoreSuccessResult()?.restoredTables }} tables</strong> and <strong class="text-white">{{ restoreSuccessResult()?.restoredRows | number }} records</strong> from <span class="font-mono text-accent">{{ restoreSuccessResult()?.filename }}</span>.
+                    </p>
+                  </div>
+                } @else if (restoreImpact()) {
+                  <!-- Impact Overview Stat Cards -->
+                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                      <div class="text-[10px] font-mono text-accent-muted uppercase">Tables Count</div>
+                      <div class="text-base font-bold text-white font-mono mt-0.5">
+                        {{ restoreImpact()?.summary?.totalTablesInSnapshot }} tables
+                      </div>
+                    </div>
+
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                      <div class="text-[10px] font-mono text-accent-muted uppercase">Snapshot Records</div>
+                      <div class="text-base font-bold text-emerald-400 font-mono mt-0.5">
+                        {{ restoreImpact()?.summary?.totalSnapshotRows | number }} rows
+                      </div>
+                    </div>
+
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                      <div class="text-[10px] font-mono text-accent-muted uppercase">Current DB Records</div>
+                      <div class="text-base font-bold text-white font-mono mt-0.5">
+                        {{ restoreImpact()?.summary?.totalCurrentRows | number }} rows
+                      </div>
+                    </div>
+
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                      <div class="text-[10px] font-mono text-accent-muted uppercase">Net Difference</div>
+                      <div class="text-base font-bold font-mono mt-0.5"
+                        [class.text-emerald-400]="(restoreImpact()?.summary?.netDifference || 0) > 0"
+                        [class.text-rose-400]="(restoreImpact()?.summary?.netDifference || 0) < 0"
+                        [class.text-accent-muted]="restoreImpact()?.summary?.netDifference === 0">
+                        {{ (restoreImpact()?.summary?.netDifference || 0) > 0 ? '+' : '' }}{{ restoreImpact()?.summary?.netDifference | number }} rows
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Danger Alert Banner -->
+                  <div class="p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-3">
+                    <span class="material-icons text-amber-400 text-lg flex-shrink-0 mt-0.5">warning</span>
+                    <div class="text-xs text-amber-200/90 leading-relaxed">
+                      <strong>Caution:</strong> Executing restore will truncate and overwrite the tables listed below with data from this snapshot. Configuration and backup logs will be preserved.
+                    </div>
+                  </div>
+
+                  <!-- Affected Tables Table -->
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-xs font-bold text-accent-muted uppercase tracking-wider">
+                      <span>Affected Database Tables & Records ({{ restoreImpact()?.tables?.length }})</span>
+                      <span class="font-mono text-[10px] text-accent">Manifest Verified</span>
+                    </div>
+
+                    <div class="border border-white/10 rounded-xl overflow-hidden max-h-60 overflow-y-auto custom-scrollbar">
+                      <table class="w-full text-left border-collapse text-xs">
+                        <thead class="sticky top-0 bg-[#141922] border-b border-white/10 text-[10px] font-bold text-accent-muted uppercase tracking-wider">
+                          <tr>
+                            <th class="py-2.5 px-3">Table Name</th>
+                            <th class="py-2.5 px-3 text-right">Snapshot Rows</th>
+                            <th class="py-2.5 px-3 text-right">Current Live Rows</th>
+                            <th class="py-2.5 px-3 text-right">Difference</th>
+                            <th class="py-2.5 px-3 text-center">Impact Action</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-white/5 font-mono">
+                          @for (tbl of restoreImpact()?.tables; track tbl.table) {
+                            <tr class="hover:bg-white/[0.02]">
+                              <td class="py-2.5 px-3 font-bold text-white">
+                                {{ tbl.table }}
+                              </td>
+                              <td class="py-2.5 px-3 text-right text-emerald-400 font-bold">
+                                {{ tbl.snapshotRows | number }}
+                              </td>
+                              <td class="py-2.5 px-3 text-right text-accent-muted">
+                                {{ tbl.currentRows | number }}
+                              </td>
+                              <td class="py-2.5 px-3 text-right font-bold"
+                                [class.text-emerald-400]="tbl.diff > 0"
+                                [class.text-rose-400]="tbl.diff < 0"
+                                [class.text-accent-muted]="tbl.diff === 0">
+                                {{ tbl.diff > 0 ? '+' : '' }}{{ tbl.diff }}
+                              </td>
+                              <td class="py-2.5 px-3 text-center">
+                                <span class="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
+                                  [class.bg-amber-500/20]="tbl.status !== 'NEW_TABLE' && tbl.status !== 'MATCHES'"
+                                  [class.text-amber-300]="tbl.status !== 'NEW_TABLE' && tbl.status !== 'MATCHES'"
+                                  [class.bg-blue-500/20]="tbl.status === 'MATCHES'"
+                                  [class.text-blue-300]="tbl.status === 'MATCHES'"
+                                  [class.bg-emerald-500/20]="tbl.status === 'NEW_TABLE'"
+                                  [class.text-emerald-300]="tbl.status === 'NEW_TABLE'">
+                                  {{ tbl.status === 'MATCHES' ? 'Will Replace' : (tbl.status === 'NEW_TABLE' ? 'Create & Fill' : 'Will Overwrite') }}
+                                </span>
+                              </td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Modal Footer -->
+              <div class="p-4 border-t border-white/10 flex items-center justify-end gap-3 bg-white/[0.02]">
+                @if (restoreSuccessResult()) {
+                  <button (click)="closeRestoreModal()"
+                    class="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold transition-all">
+                    Close
+                  </button>
+                } @else {
+                  <button (click)="closeRestoreModal()" [disabled]="restoreExecuting()"
+                    class="px-4 py-2.5 bg-white/5 hover:bg-white/10 text-accent-muted hover:text-white rounded-xl text-xs font-semibold transition-all disabled:opacity-50">
+                    Cancel
+                  </button>
+
+                  <button (click)="executeRestore()" [disabled]="restoreExecuting() || restoreImpactLoading() || !restoreImpact()"
+                    class="px-5 py-2.5 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-500 hover:to-rose-600 text-white font-bold rounded-xl text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-rose-900/30 transition-all disabled:opacity-50">
+                    <span class="material-icons text-sm" [class.animate-spin]="restoreExecuting()">
+                      {{ restoreExecuting() ? 'sync' : 'restore_page' }}
+                    </span>
+                    {{ restoreExecuting() ? 'Restoring Full Database...' : 'Confirm & Restore Full Database' }}
+                  </button>
+                }
+              </div>
+
+            </div>
+          </div>
+        }
       </div>
       }
 

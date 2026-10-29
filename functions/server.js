@@ -226,6 +226,7 @@ const uploadRoutes = require('./routes/upload');
 const chatRoutes = require('./routes/chats');
 const tutorialRoutes = require('./routes/tutorials');
 const analyticsRoutes = require('./routes/analytics');
+const backupRoutes = require('./routes/backups');
 const Chat = require('./models/Chat');
 
 const app = express();
@@ -285,6 +286,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/tutorials', tutorialRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/backups', backupRoutes);
 app.use('/api/upload', express.raw({ type: 'multipart/form-data', limit: '10mb' }), (req, res, next) => {
   req.rawBody = req.body;
   next();

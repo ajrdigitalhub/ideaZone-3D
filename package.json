@@ -29,6 +29,7 @@
     "@angular/ssr": "^21.0.0",
     "@google/genai": "^1.27.0",
     "@grpc/grpc-js": "^1.14.3",
+    "adm-zip": "^0.6.1",
     "bcryptjs": "^3.0.3",
     "busboy": "^1.6.0",
     "concurrently": "^9.2.1",

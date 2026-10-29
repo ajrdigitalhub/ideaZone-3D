@@ -59,17 +59,18 @@ class User {
 
   // Find by email
   static async findByEmail(email) {
-    const query = 'SELECT * FROM users WHERE email = $1';
-    const result = await pool.query(query, [email]);
-    console.log("emailll",result);
+    if (!email) return null;
+    const query = 'SELECT * FROM users WHERE LOWER(email) = LOWER($1)';
+    const result = await pool.query(query, [email.trim()]);
     if (result.rows.length === 0) return null;
     return new User(result.rows[0]);
   }
 
   // Find by ID
   static async findById(id) {
+    if (!id || isNaN(Number(id)) || !/^\d+$/.test(String(id))) return null;
     const query = 'SELECT * FROM users WHERE id = $1';
-    const result = await pool.query(query, [id]);
+    const result = await pool.query(query, [parseInt(id, 10)]);
     if (result.rows.length === 0) return null;
     return new User(result.rows[0]);
   }

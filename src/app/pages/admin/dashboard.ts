@@ -14,6 +14,7 @@ import { HttpClient } from '@angular/common/http';
 import { animate, stagger } from 'motion';
 import { TutorialService, TutorialCategory, Tutorial, AdminOverallStats, TutorialStats, UserStats } from '../../services/tutorial.service';
 import { ApiService } from '../../services/api.service';
+import { BackupService, BackupRecord, BackupSettings, BackupStats, BackupImpactReport, RestoreResponse } from '../../services/backup.service';
 import { firstValueFrom } from 'rxjs';
 
 interface Customer {
@@ -56,17 +57,19 @@ export class AdminDashboardComponent implements AfterViewInit {
   toastService = inject(ToastService);
   http = inject(HttpClient);
   apiService = inject(ApiService);
+  backupService = inject(BackupService);
   private el = inject(ElementRef);
   analyticsStats = signal<any>(null);
 
-  activeTab = signal<'dashboard' | 'orders' | 'products' | 'categories' | 'customers' | 'chat' | 'messages' | 'about' | 'contact' | 'payments' | 'whatsapp' | 'hero' | 'footer' | 'tutorials'>('dashboard');
+  activeTab = signal<'dashboard' | 'orders' | 'products' | 'categories' | 'customers' | 'chat' | 'messages' | 'about' | 'contact' | 'payments' | 'whatsapp' | 'hero' | 'footer' | 'tutorials' | 'backups'>('dashboard');
   isSidebarCollapsed = signal(false);
   isMobileMenuOpen = signal(false);
   
   expandedSections = signal<Record<string, boolean>>({
     'store': true,
     'content': true,
-    'communication': true
+    'communication': true,
+    'system': true
   });
 
   toggleSection(section: string) {
@@ -177,7 +180,8 @@ export class AdminDashboardComponent implements AfterViewInit {
       'payments': 'Payment Settings',
       'whatsapp': 'WhatsApp Configuration',
       'hero': 'Hero Section Editor',
-      'footer': 'Footer Editor'
+      'footer': 'Footer Editor',
+      'backups': 'Database Backup & Disaster Recovery Center'
     };
     return names[tab] || tab;
   }
@@ -228,6 +232,7 @@ export class AdminDashboardComponent implements AfterViewInit {
         if (tab === 'messages') this.loadMessages();
         if (tab === 'tutorials') this.loadTutorialsData();
         if (tab === 'dashboard' || tab === 'orders') this.loadAnalyticsStats();
+        if (tab === 'backups') this.loadBackupData();
         setTimeout(() => this.animateContent(), 0);
       });
     });
@@ -1107,5 +1112,226 @@ export class AdminDashboardComponent implements AfterViewInit {
 
   toggleMobileMenu() {
     this.isMobileMenuOpen.update(v => !v);
+  }
+
+  // --- Database Backup & Recovery Signals & Methods ---
+  backupStats = signal<BackupStats | null>(null);
+  backupHistory = signal<BackupRecord[]>([]);
+  backupLoading = signal<boolean>(false);
+  backupActionLoading = signal<boolean>(false);
+  restoreModalOpen = signal<boolean>(false);
+  restoreImpactLoading = signal<boolean>(false);
+  restoreExecuting = signal<boolean>(false);
+  restoreImpact = signal<BackupImpactReport | null>(null);
+  selectedBackupForRestore = signal<BackupRecord | null>(null);
+  restoreSuccessResult = signal<RestoreResponse | null>(null);
+  backupFilterType: string = 'ALL';
+  backupFilterStatus: string = 'ALL';
+  backupSettings = signal<BackupSettings>({
+    auto_enabled: true,
+    frequency: 'TWICE_WEEKLY',
+    run_days: ['Monday', 'Thursday'],
+    execution_time: '02:00',
+    timezone: 'Asia/Kolkata',
+    retention_count: 10,
+    cloud_storage_path: 'backups',
+    auto_download_enabled: true
+  });
+
+  async loadBackupData() {
+    this.backupLoading.set(true);
+    try {
+      const stats = await firstValueFrom(this.backupService.getStats());
+      if (stats) {
+        this.backupStats.set(stats);
+        if (stats.settings) {
+          this.backupSettings.set(stats.settings);
+        }
+      }
+      await this.filterBackupHistory();
+    } catch (error: any) {
+      console.error('Failed to load backup data:', error);
+      this.toastService.show('Failed to load database backup info', 'error');
+    } finally {
+      this.backupLoading.set(false);
+    }
+  }
+
+  async filterBackupHistory() {
+    try {
+      const history = await firstValueFrom(this.backupService.getHistory(this.backupFilterType, this.backupFilterStatus));
+      if (history) {
+        this.backupHistory.set(history);
+      }
+    } catch (error) {
+      console.error('Failed to filter backup history', error);
+    }
+  }
+
+  async triggerManualBackup() {
+    if (this.backupActionLoading()) return;
+    this.backupActionLoading.set(true);
+    try {
+      const res = await firstValueFrom(this.backupService.createBackup());
+      this.toastService.show('Manual database snapshot created successfully!', 'success');
+      
+      // Auto-download if enabled
+      if (this.backupSettings().auto_download_enabled && res.backup) {
+        this.downloadBackupFile(res.backup);
+      }
+
+      await this.loadBackupData();
+    } catch (error: any) {
+      console.error('Backup creation error:', error);
+      this.toastService.show(`Backup creation failed: ${error.message || 'Error'}`, 'error');
+    } finally {
+      this.backupActionLoading.set(false);
+    }
+  }
+
+  async downloadBackupFile(backup: BackupRecord) {
+    try {
+      this.toastService.show(`Preparing download: ${backup.filename}...`, 'info');
+      const blob = await firstValueFrom(this.backupService.downloadBackup(backup));
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = backup.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+      this.toastService.show(`Downloaded backup file: ${backup.filename}`, 'success');
+    } catch (error: any) {
+      console.error('Download error:', error);
+      const fallbackUrl = this.backupService.getDownloadUrl(backup);
+      window.open(fallbackUrl, '_blank');
+      this.toastService.show('Opened backup download in browser', 'info');
+    }
+  }
+
+  async verifyBackupFile(backup: BackupRecord) {
+    try {
+      const res = await firstValueFrom(this.backupService.verifyBackup(backup.id));
+      if (res.verified) {
+        this.toastService.show(`Snapshot verified! ${res.table_count} tables, ${res.row_count} rows integrity checked.`, 'success');
+      } else {
+        this.toastService.show('Backup verification notice: syntax unverified.', 'error');
+      }
+    } catch (error: any) {
+      this.toastService.show(`Verification failed: ${error.message || 'Error'}`, 'error');
+    }
+  }
+
+  async openRestoreModal(backup: BackupRecord) {
+    this.selectedBackupForRestore.set(backup);
+    this.restoreImpact.set(null);
+    this.restoreSuccessResult.set(null);
+    this.restoreModalOpen.set(true);
+    this.restoreImpactLoading.set(true);
+
+    try {
+      const impact = await firstValueFrom(this.backupService.getRestoreImpact(backup.id));
+      this.restoreImpact.set(impact);
+    } catch (error: any) {
+      console.error('Failed to load backup impact report:', error);
+      this.toastService.show(`Failed to analyze backup archive: ${error.message || 'Error'}`, 'error');
+      this.restoreModalOpen.set(false);
+    } finally {
+      this.restoreImpactLoading.set(false);
+    }
+  }
+
+  closeRestoreModal() {
+    if (this.restoreExecuting()) return;
+    this.restoreModalOpen.set(false);
+    this.restoreImpact.set(null);
+    this.restoreSuccessResult.set(null);
+    this.selectedBackupForRestore.set(null);
+  }
+
+  async executeRestore() {
+    const backup = this.selectedBackupForRestore();
+    if (!backup || this.restoreExecuting()) return;
+
+    this.restoreExecuting.set(true);
+    try {
+      const result = await firstValueFrom(this.backupService.restoreBackup(backup.id));
+      this.restoreSuccessResult.set(result);
+      this.toastService.show(`Database restored successfully from ${backup.filename}!`, 'success');
+      await this.loadBackupData();
+    } catch (error: any) {
+      console.error('Database restore error:', error);
+      this.toastService.show(`Restore failed: ${error.message || 'Error'}`, 'error');
+    } finally {
+      this.restoreExecuting.set(false);
+    }
+  }
+
+  restoreBackupFile(backup: BackupRecord) {
+    this.openRestoreModal(backup);
+  }
+
+  async deleteBackupFile(backup: BackupRecord) {
+    if (!confirm(`Delete backup "${backup.filename}" from server storage?`)) {
+      return;
+    }
+    try {
+      await firstValueFrom(this.backupService.deleteBackup(backup.id));
+      this.toastService.show('Backup deleted successfully', 'success');
+      await this.loadBackupData();
+    } catch (error: any) {
+      this.toastService.show('Failed to delete backup', 'error');
+    }
+  }
+
+  async saveBackupSettings() {
+    try {
+      const res = await firstValueFrom(this.backupService.saveSettings(this.backupSettings()));
+      if (res?.settings) {
+        this.backupSettings.set(res.settings);
+        this.toastService.show('Automated backup schedule & settings saved!', 'success');
+        await this.loadBackupData();
+      }
+    } catch (error: any) {
+      console.error('Save settings error:', error);
+      this.toastService.show('Failed to save backup settings', 'error');
+    }
+  }
+
+  toggleRunDay(day: string) {
+    const currentDays = [...(this.backupSettings().run_days || [])];
+    const index = currentDays.indexOf(day);
+    if (index > -1) {
+      currentDays.splice(index, 1);
+    } else {
+      currentDays.push(day);
+    }
+    this.backupSettings.update(s => ({ ...s, run_days: currentDays }));
+  }
+
+  exportAllBackups() {
+    const history = this.backupHistory();
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(history, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `database_backups_log_${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    this.toastService.show('Exported backup history JSON archive', 'success');
+  }
+
+  toggleAutoBackup() {
+    this.backupSettings.update(s => ({ ...s, auto_enabled: !s.auto_enabled }));
+  }
+
+  formatBytes(bytes: number | string | undefined | null): string {
+    const num = Number(bytes);
+    if (!num || isNaN(num) || num <= 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(num) / Math.log(k));
+    return parseFloat((num / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 }

@@ -1,5 +1,6 @@
 const admin = require('firebase-admin');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 let bucket = null;
 
@@ -9,7 +10,7 @@ try {
   const bucketName = process.env.APP_FIREBASE_STORAGE_BUCKET;
 
   if (serviceAccountBase64 && serviceAccountBase64 !== "YOUR_BASE64_ENCODED_SERVICE_ACCOUNT_JSON" && bucketName && bucketName !== "YOUR_FIREBASE_STORAGE_BUCKET") {
-    const serviceAccountJson = Buffer.from(serviceAccountBase64, 'base64').toString('ascii');
+    const serviceAccountJson = Buffer.from(serviceAccountBase64, 'base64').toString('utf8');
     const serviceAccount = JSON.parse(serviceAccountJson);
 
     // Initialize if not already initialized
@@ -21,7 +22,7 @@ try {
     }
 
     bucket = admin.storage().bucket();
-    console.log('Firebase Admin initialized successfully');
+    console.log('Firebase Admin initialized successfully with bucket:', bucketName);
   } else {
     console.warn('Firebase Admin credentials missing. Upload feature will be disabled.');
   }
